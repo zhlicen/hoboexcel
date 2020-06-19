@@ -7,14 +7,12 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
-	//"golang.org/x/text/unicode/norm"
 )
-
-var TempDir = "./xl/worksheets/"
 
 func CleanNonUtfAndControlChar(s string) string {
 	s = strings.Map(func(r rune) rune {
@@ -28,8 +26,13 @@ func CleanNonUtfAndControlChar(s string) string {
 	}, s)
 	return s
 }
-func ExportWorksheet(filename string, rows RowFetcher, SharedStrWriter *bufio.Writer, cellsCount *int) {
-	file, _ := os.Create(filename)
+
+func ExportWorksheet(filename string, rows RowFetcher, sharedStrWriter *bufio.Writer, cellsCount *int) error {
+	file, e := os.Create(filename)
+	if e != nil {
+		log.Println(e)
+		return e
+	}
 	defer file.Close()
 
 	Writer := bufio.NewWriter(file)
@@ -44,60 +47,74 @@ func ExportWorksheet(filename string, rows RowFetcher, SharedStrWriter *bufio.Wr
 	//sortedUsedStr := []string{}
 	//cellsCount := 0
 	for {
-		raw_row := rows.NextRow()
-		if raw_row == nil {
+		rawRow := rows.NextRow()
+		if rawRow == nil {
 			break
 		}
 		rr := row{}
 		rr.R = rowCount
-		for idx, val := range raw_row {
+		for idx, val := range rawRow {
 			colName := colCountToAlphaabet(idx)
 			newCol := XlsxC{}
 			newCol.T = "s"
 			newCol.R = fmt.Sprintf("%s%d", colName, rowCount)
-			// idxStr, ok := uniqueString[val]
-			// if ok {
-			// 	newCol.V = strconv.Itoa(idxStr)
-			// } else {
-			// 	uniqueString[val] = len(uniqueString)
-			// 	newCol.V = strconv.Itoa(uniqueString[val])
-			// 	sortedUsedStr = append(sortedUsedStr, val)
-			// }
+
 			newCol.V = strconv.Itoa(*cellsCount)
 			*cellsCount++
 			rr.C = append(rr.C, newCol)
 			fmt.Println(val, html.EscapeString(CleanNonUtfAndControlChar(val)))
-			SharedStrWriter.WriteString(fmt.Sprintf("<si><t>%s</t></si>", html.EscapeString(CleanNonUtfAndControlChar(val))))
+			sharedStrWriter.WriteString(fmt.Sprintf("<si><t>%s</t></si>", html.EscapeString(CleanNonUtfAndControlChar(val))))
 		}
 		rr.Spans = "1:10"
 		rr.Descent = "0.25"
 		bb, e := xml.Marshal(rr)
 		if e != nil {
-			fmt.Println("Encoder error", e.Error())
-			fmt.Println(rr)
-			os.Exit(1)
+			log.Println(e)
+			return e
 		}
-		//fmt.Println(string(bb))
 		pp, e := Writer.Write(bb)
 		if e != nil {
-			fmt.Println("Writer error", e.Error())
-			fmt.Println(rr)
-			os.Exit(1)
+			log.Println(e)
+			return e
 		}
 		if pp != len(bb) {
-			fmt.Println("Writer error2")
+			return fmt.Errorf("wrote %d, expect %d", pp, len(bb))
 		}
 		if rowCount%1000 == 0 {
-			SharedStrWriter.Flush()
-			Writer.Flush()
+			e = sharedStrWriter.Flush()
+			if e != nil {
+				log.Println(e)
+				return e
+			}
+			e = Writer.Flush()
+			if e != nil {
+				log.Println(e)
+				return e
+			}
 		}
 		rowCount++
 
 	}
-	Writer.WriteString("</sheetData>")
-	Writer.WriteString("<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>")
-	Writer.WriteString("</worksheet>")
-	Writer.Flush()
+	_, e = Writer.WriteString("</sheetData>")
+	if e != nil {
+		log.Println(e)
+		return e
+	}
+	_, e = Writer.WriteString("<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>")
+	if e != nil {
+		log.Println(e)
+		return e
+	}
+	_, e = Writer.WriteString("</worksheet>")
+	if e != nil {
+		log.Println(e)
+		return e
+	}
+	e = Writer.Flush()
+	if e != nil {
+		log.Println(e)
+		return e
+	}
 
 	//write shared strings
 	//sharedString := xlsxSST{}
@@ -114,6 +131,7 @@ func ExportWorksheet(filename string, rows RowFetcher, SharedStrWriter *bufio.Wr
 	// if e != nil {
 	// 	fmt.Println(e.Error())
 	// }
+	return nil
 
 }
 func colCountToAlphaabet(idx int) string {
@@ -127,18 +145,35 @@ func colCountToAlphaabet(idx int) string {
 	}
 	return strings.ToUpper(colName)
 }
-func Export(filename string, fetcher RowFetcher) {
+
+func Export(filename string, fetcher RowFetcher) error {
 	now := time.Now()
 	sheetName := now.Format("20060102150405") //filename should be (pseudo)random
-	shaStr, _ := os.Create(sheetName + ".ss")
+	shaStr, e := os.Create(sheetName + ".ss")
+	if e != nil {
+		log.Println(e)
+		return e
+	}
 	//defer shaStr.Close()
-	SharedStrWriter := bufio.NewWriter(shaStr)
-	SharedStrWriter.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
-	SharedStrWriter.WriteString("<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" count=\"0\" uniqueCount=\"0\">")
+	sharedStrWriter := bufio.NewWriter(shaStr)
+	sharedStrWriter.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
+	sharedStrWriter.WriteString("<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" count=\"0\" uniqueCount=\"0\">")
 	cellCount := 0
-	ExportWorksheet(sheetName, fetcher, SharedStrWriter, &cellCount)
-	SharedStrWriter.WriteString("</sst>")
-	SharedStrWriter.Flush()
+	e = ExportWorksheet(sheetName, fetcher, sharedStrWriter, &cellCount)
+	if e != nil {
+		log.Println(e)
+		return e
+	}
+	_, e = sharedStrWriter.WriteString("</sst>")
+	if e != nil {
+		log.Println(e)
+		return e
+	}
+	e = sharedStrWriter.Flush()
+	if e != nil {
+		log.Println(e)
+		return e
+	}
 	outputFile := filename
 	file := make(map[string]io.Reader)
 	file["_rels/.rels"] = DummyRelsDotRels()
@@ -151,24 +186,39 @@ func Export(filename string, fetcher RowFetcher) {
 	file["xl/workbook.xml"] = DummyWorkbookXml()
 	file["xl/sharedStrings.xml"], _ = os.Open(sheetName + ".ss")
 	file["[Content_Types].xml"] = DummyContentTypes()
-	of, _ := os.Create(outputFile)
+	of, e := os.Create(outputFile)
+	if e != nil {
+		log.Println(e)
+		return e
+	}
 	defer of.Close()
 	zipWriter := zip.NewWriter(of)
 	for k, v := range file {
 		fWriter, _ := zipWriter.Create(k)
-		io.Copy(fWriter, v)
-
+		_, e = io.Copy(fWriter, v)
+		if e != nil {
+			log.Println(e)
+		}
 	}
-	zipWriter.Close()
+	e = zipWriter.Close()
+	if e != nil {
+		log.Println(e)
+	}
 	(file["xl/sharedStrings.xml"].(*os.File)).Close()
 	(file["xl/worksheets/sheet1.xml"].(*os.File)).Close()
-	e := os.Remove("./" + sheetName)
+	e = os.Remove("./" + sheetName)
 	if e != nil {
-		fmt.Println(e.Error())
+		log.Println(e)
 	}
-	shaStr.Close()
+	e = shaStr.Close()
+	if e != nil {
+		log.Println(e)
+		return e
+	}
 	e = os.Remove("./" + sheetName + ".ss")
 	if e != nil {
-		fmt.Println(e.Error())
+		log.Println(e)
+		return e
 	}
+	return nil
 }
